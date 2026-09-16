@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 # Toolchain
 # ---------------------------------------------------------------------------
-AS      := nasm
+AS     := nasm
 ASFLAGS := -f elf32
 
 # Try the cross-compiler first; fall back to native gcc -m32
@@ -32,7 +32,7 @@ BOOT_BIN   := boot/boot.bin
 # Assembly objects (kernel_entry + switch)
 KERNEL_ASM_OBJS := build/kernel_entry.o build/switch.o
 
-# C sources (kernel, vga, keyboard, process, timer, scheduler, idt, pic)
+# C sources (kernel, vga, keyboard, process, timer, scheduler, idt, pic + stage 2 files)
 KERNEL_C_SRCS  := kernel/kernel.c \
                   kernel/vga.c    \
                   kernel/keyboard.c \
@@ -40,7 +40,10 @@ KERNEL_C_SRCS  := kernel/kernel.c \
                   kernel/timer.c \
                   kernel/scheduler.c \
                   kernel/idt.c \
-                  kernel/pic.c
+                  kernel/pic.c \
+                  kernel/thread.c \
+                  kernel/mutex.c \
+                  kernel/semaphore.c
 
 KERNEL_C_OBJS  := $(patsubst kernel/%.c, build/%.o, $(KERNEL_C_SRCS))
 KERNEL_ELF     := build/kernel.elf

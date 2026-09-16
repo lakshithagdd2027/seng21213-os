@@ -1,5 +1,5 @@
 /* =============================================================================
- * SENG21213-OS :: Main Kernel  (Stage 1 – Multitasking & Scheduling)
+ * SENG21213-OS :: Main Kernel  (Stage 1 & 2 – Multitasking, Threads, Sync)
  * File     : kernel/kernel.c
  * ============================================================================*/
 
@@ -11,6 +11,9 @@
 #include "../include/types.h"
 #include "../include/pic.h"
 #include "../include/idt.h"
+#include "../include/thread.h"
+#include "../include/mutex.h"
+#include "../include/semaphore.h"
 
 extern pcb_t process_table[MAX_PROCESSES];
 extern int process_count;
@@ -22,6 +25,7 @@ static void cmd_echo(const char *args);
 static void cmd_mem(void);
 static void cmd_ps(void);
 
+/* --- String and Int Helpers --- */
 static int k_strcmp(const char *a, const char *b) {
     while (*a && (*a == *b)) { a++; b++; }
     return (uint8_t)*a - (uint8_t)*b;
@@ -48,6 +52,23 @@ static void vga_putc(char c) {
     vga_puts(str);
 }
 
+static void print_int(int num) {
+    char buf[16];
+    int i = 0;
+    if (num == 0) { vga_puts("0"); return; }
+    while (num > 0) {
+        buf[i++] = (num % 10) + '0';
+        num /= 10;
+    }
+    while (i > 0) {
+        vga_putc(buf[--i]);
+    }
+}
+
+/* ==========================================================
+ * Background Tasks (Stage 1)
+ * ========================================================== */
+
 // Background Task A: Directly writes 'A' to the top-right corner (Row 0, Col 78)
 static void task_a(void) {
     volatile char *vga = (volatile char*)0xB8000;
@@ -68,6 +89,136 @@ static void task_b(void) {
     }
 }
 
+/* ==========================================================
+ * Stage 2: DEMO 1 - Race Condition (With & Without Mutex)
+ * ========================================================== */
+volatile int myglobal = 0;
+volatile int finished_threads = 0;
+mutex_t mymutex;
+
+static void thread_bad(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 1000000; i++) {
+        // Read, Delay, Write ක්‍රමය හරහා Race Condition එකක් බලහත්කාරයෙන් ඇති කිරීම
+        int temp = myglobal;
+        for(volatile int d = 0; d < 10; d++); // කුඩා ප්‍රමාදයක් (Context switch වීමට ඉඩ සැලසීම)
+        myglobal = temp + 1;
+    }
+    finished_threads++;
+    while(1) __asm__ __volatile__("hlt");
+}
+
+static void thread_good(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 1000000; i++) {
+        mutex_lock(&mymutex);
+        
+        // Lock එකක් දමා ඇති නිසා මෙහිදී දත්ත ආරක්ෂා වේ
+        int temp = myglobal;
+        for(volatile int d = 0; d < 10; d++); 
+        myglobal = temp + 1;
+        
+        mutex_unlock(&mymutex);
+    }
+    finished_threads++;
+    while(1) __asm__ __volatile__("hlt");
+}
+
+static void cmd_race1(void) {
+    myglobal = 0;
+    finished_threads = 0;
+    vga_puts("\n  [!] Starting 2 Threads WITHOUT Mutex...\n");
+    vga_puts("  Expected: 2000000. Wait a few seconds...\n");
+    
+    thread_create(thread_bad, NULL);
+    thread_create(thread_bad, NULL);
+    
+    while (finished_threads < 2) { /* Busy wait until both finish */ }
+    
+    vga_puts_color("  Result (Data Corrupted): ", VGA_LIGHT_RED, VGA_BLACK);
+    print_int(myglobal);
+    vga_puts("\n");
+}
+
+static void cmd_race2(void) {
+    myglobal = 0;
+    finished_threads = 0;
+    mutex_init(&mymutex);
+    vga_puts("\n  [*] Starting 2 Threads WITH Mutex...\n");
+    vga_puts("  Expected: 2000000. Wait a few seconds...\n");
+    
+    thread_create(thread_good, NULL);
+    thread_create(thread_good, NULL);
+    
+    while (finished_threads < 2) { /* Busy wait until both finish */ }
+    
+    vga_puts_color("  Result (Safe): ", VGA_LIGHT_GREEN, VGA_BLACK);
+    print_int(myglobal);
+    vga_puts("\n");
+}
+
+/* ==========================================================
+ * Stage 2: DEMO 2 - Bounded Buffer Producer-Consumer
+ * ========================================================== */
+#define BUFFER_SIZE 5
+int buffer[BUFFER_SIZE];
+int in = 0, out = 0;
+
+semaphore_t empty;
+semaphore_t full;
+mutex_t prod_cons_mutex;
+
+static void producer(void *arg) {
+    (void)arg;
+    for (int i = 1; i <= 8; i++) {
+        sem_wait(&empty);
+        mutex_lock(&prod_cons_mutex);
+        
+        buffer[in] = i;
+        in = (in + 1) % BUFFER_SIZE;
+        vga_puts("  [Producer] Created Item: "); print_int(i); vga_puts("\n");
+        
+        mutex_unlock(&prod_cons_mutex);
+        sem_signal(&full);
+        
+        for(volatile int d=0; d<30000000; d++); // Delay for visualization
+    }
+    while(1) __asm__ __volatile__("hlt");
+}
+
+static void consumer(void *arg) {
+    (void)arg;
+    for (int i = 1; i <= 8; i++) {
+        sem_wait(&full);
+        mutex_lock(&prod_cons_mutex);
+        
+        int item = buffer[out];
+        out = (out + 1) % BUFFER_SIZE;
+        vga_puts("  [Consumer] Consumed Item: "); print_int(item); vga_puts("\n");
+        
+        mutex_unlock(&prod_cons_mutex);
+        sem_signal(&empty);
+        
+        for(volatile int d=0; d<40000000; d++); // Delay for visualization
+    }
+    while(1) __asm__ __volatile__("hlt");
+}
+
+static void cmd_prodcons(void) {
+    sem_init(&empty, BUFFER_SIZE);
+    sem_init(&full, 0);
+    mutex_init(&prod_cons_mutex);
+    in = 0;
+    out = 0;
+    
+    vga_puts_color("\n  Starting Producer and Consumer Threads...\n\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    thread_create(producer, NULL);
+    thread_create(consumer, NULL);
+}
+
+/* ==========================================================
+ * Standard Shell Components
+ * ========================================================== */
 static void print_splash(void) {
     vga_clear(VGA_BLACK);
     vga_draw_box(0, 0, 7, 80, VGA_LIGHT_MAGENTA);
@@ -96,7 +247,7 @@ static void print_splash(void) {
     vga_puts_color("    [L09] ", VGA_YELLOW, VGA_BLACK);
     vga_puts("Process Management  - PCB, ready queue, round-robin scheduler [ACTIVE]\n");
     vga_puts_color("    [L10] ", VGA_YELLOW, VGA_BLACK);
-    vga_puts("Threads & Sync      - kernel threads, mutex, semaphore\n");
+    vga_puts("Threads & Sync      - kernel threads, mutex, semaphore [ACTIVE]\n");
     vga_puts_color("    [L11] ", VGA_YELLOW, VGA_BLACK);
     vga_puts("Memory Management   - physical page allocator, virtual memory\n");
     vga_puts_color("    [L12] ", VGA_YELLOW, VGA_BLACK);
@@ -106,12 +257,16 @@ static void print_splash(void) {
 static void cmd_help(void) {
     vga_puts_color("\n  SENG21213-OS Shell Commands\n", VGA_YELLOW, VGA_BLACK);
     vga_puts("  ---------------------------------------------\n");
-    vga_puts("  help    - Show this help message\n");
-    vga_puts("  clear   - Clear the screen\n");
-    vga_puts("  about   - About this OS and course\n");
-    vga_puts("  echo    - Echo text to screen\n");
-    vga_puts("  mem     - Memory map (stub)\n");
-    vga_puts("  ps      - List processes\n\n");
+    vga_puts("  help     - Show this help message\n");
+    vga_puts("  clear    - Clear the screen\n");
+    vga_puts("  about    - About this OS and course\n");
+    vga_puts("  echo     - Echo text to screen\n");
+    vga_puts("  mem      - Memory map (stub)\n");
+    vga_puts("  ps       - List processes and threads\n");
+    vga_puts_color("\n  Stage 2 Demonstrations (Lecture 10):\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  race1    - Show Race Condition (without mutex)\n");
+    vga_puts("  race2    - Show Safe Execution (with mutex)\n");
+    vga_puts("  prodcons - Run Producer-Consumer Demo\n\n");
 }
 
 static void cmd_clear(void) { vga_clear(VGA_BLACK); }
@@ -139,8 +294,8 @@ static void cmd_ps(void) {
     vga_puts("  -------------------\n");
     for (int i = 0; i < process_count; i++) {
         vga_puts("   ");
-        vga_putc('0' + process_table[i].pid);
-        vga_puts("     ");
+        print_int(process_table[i].pid);
+        vga_puts("      ");
         if (process_table[i].state == PROCESS_RUNNING) {
             vga_puts("RUNNING\n");
         } else if (process_table[i].state == PROCESS_READY) {
@@ -170,6 +325,9 @@ static void shell_run(void) {
         if (k_strcmp(cmd, "about") == 0) { cmd_about(); continue; }
         if (k_strcmp(cmd, "mem")   == 0) { cmd_mem();   continue; }
         if (k_strcmp(cmd, "ps")    == 0) { cmd_ps();    continue; }
+        if (k_strcmp(cmd, "race1") == 0) { cmd_race1(); continue; }
+        if (k_strcmp(cmd, "race2") == 0) { cmd_race2(); continue; }
+        if (k_strcmp(cmd, "prodcons") == 0) { cmd_prodcons(); continue; }
 
         if (k_strncmp(cmd, "echo ", 5) == 0) {
             cmd_echo(k_ltrim(cmd + 5));
