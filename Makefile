@@ -32,7 +32,7 @@ BOOT_BIN   := boot/boot.bin
 # Assembly objects (kernel_entry + switch)
 KERNEL_ASM_OBJS := build/kernel_entry.o build/switch.o
 
-# C sources (kernel, vga, keyboard, process, timer, scheduler, idt, pic + stage 2 files)
+# C sources (kernel, vga, keyboard, process, timer, scheduler, idt, pic, stage 2 & stage 3 files)
 KERNEL_C_SRCS  := kernel/kernel.c \
                   kernel/vga.c    \
                   kernel/keyboard.c \
@@ -43,7 +43,9 @@ KERNEL_C_SRCS  := kernel/kernel.c \
                   kernel/pic.c \
                   kernel/thread.c \
                   kernel/mutex.c \
-                  kernel/semaphore.c
+                  kernel/semaphore.c \
+                  kernel/shell.c \
+                  kernel/pmm.c
 
 KERNEL_C_OBJS  := $(patsubst kernel/%.c, build/%.o, $(KERNEL_C_SRCS))
 KERNEL_ELF     := build/kernel.elf

@@ -1,5 +1,5 @@
 /* =============================================================================
- * SENG21213-OS :: Main Kernel  (Stage 1 & 2 – Multitasking, Threads, Sync)
+ * SENG21213-OS :: Main Kernel  (Stage 1, 2 & 3 – Multitasking, Threads, Sync, Memory)
  * File     : kernel/kernel.c
  * ============================================================================*/
 
@@ -14,6 +14,7 @@
 #include "../include/thread.h"
 #include "../include/mutex.h"
 #include "../include/semaphore.h"
+#include "../include/pmm.h" // Stage 3: PMM Header
 
 #ifndef PROCESS_DEAD
 #define PROCESS_DEAD 3
@@ -30,6 +31,9 @@ static void cmd_mem(void);
 static void cmd_ps(void);
 static void cmd_kill(const char *args);
 static void cmd_threads(void);
+static void cmd_meminfo(void); // Stage 3 Command
+static void cmd_test_pmm(void); // Stage 3 Command
+static void cmd_free(void); // Stage 3 Command: Free memory
 
 /* --- String and Int Helpers --- */
 static int k_strcmp(const char *a, const char *b) {
@@ -53,12 +57,12 @@ static const char *k_ltrim(const char *s) {
     return s;
 }
 
-static void vga_putc(char c) {
+void vga_putc(char c) {
     char str[2] = {c, '\0'};
     vga_puts(str);
 }
 
-static void print_int(int num) {
+void print_int(int num) {
     char buf[16];
     int i = 0;
     if (num == 0) { vga_puts("0"); return; }
@@ -129,7 +133,7 @@ static void thread_good(void *arg) {
     for (int i = 0; i < 1000000; i++) {
         mutex_lock(&mymutex);
         
-        // Lock එකක් දමා ඇති නිසා මෙහිදී දත්ත ආරක්ෂා වේ
+        // Data is protected here because a lock is applied
         int temp = myglobal;
         for(volatile int d = 0; d < 10; d++); 
         myglobal = temp + 1;
@@ -233,6 +237,47 @@ static void cmd_prodcons(void) {
 }
 
 /* ==========================================================
+ * Stage 3: Physical Memory Manager Commands
+ * ========================================================== */
+static void cmd_meminfo(void) {
+    uint32_t total_mb = pmm_get_total_memory() / (1024 * 1024);
+    uint32_t used_mb = pmm_get_used_memory() / (1024 * 1024);
+    uint32_t free_mb = total_mb - used_mb;
+
+    vga_puts("\n  Physical Memory Information\n");
+    vga_puts("  ---------------------------------------------\n");
+    vga_puts("  Total : "); print_int(total_mb); vga_puts(" MB\n");
+    vga_puts("  Used  : "); print_int(used_mb); vga_puts(" MB\n");
+    vga_puts("  Free  : "); print_int(free_mb); vga_puts(" MB\n\n");
+}
+
+static void cmd_test_pmm(void) {
+    void* frames[100];
+    
+    vga_puts("\n  [Test] Allocating 100 memory frames...\n");
+    for (int i = 0; i < 100; i++) {
+        frames[i] = pmm_alloc_frame();
+    }
+    
+    vga_puts("  [Test] Freeing 100 memory frames...\n");
+    for (int i = 0; i < 100; i++) {
+        pmm_free_frame(frames[i]);
+    }
+    
+    vga_puts("  [Test] Complete. Run 'meminfo' to verify no leaks.\n\n");
+}
+
+static void cmd_free(void) {
+    uint32_t total_mb = pmm_get_total_memory() / (1024 * 1024);
+    uint32_t used_mb = pmm_get_used_memory() / (1024 * 1024);
+    uint32_t free_mb = total_mb - used_mb;
+
+    vga_puts("\n  Free Memory: "); 
+    print_int(free_mb); 
+    vga_puts(" MB\n\n");
+}
+
+/* ==========================================================
  * Standard Shell Components
  * ========================================================== */
 static void print_splash(void) {
@@ -265,7 +310,7 @@ static void print_splash(void) {
     vga_puts_color("    [L10] ", VGA_YELLOW, VGA_BLACK);
     vga_puts("Threads & Sync      - kernel threads, mutex, semaphore [ACTIVE]\n");
     vga_puts_color("    [L11] ", VGA_YELLOW, VGA_BLACK);
-    vga_puts("Memory Management   - physical page allocator, virtual memory\n");
+    vga_puts("Memory Management   - physical page allocator, virtual memory [ACTIVE]\n");
     vga_puts_color("    [L12] ", VGA_YELLOW, VGA_BLACK);
     vga_puts("File System         - RAM disk, FAT-like directory structure\n\n");
 }
@@ -277,17 +322,21 @@ static void cmd_help(void) {
     vga_puts("  clear    - Clear the screen\n");
     vga_puts("  about    - About this OS and course\n");
     vga_puts("  echo     - Echo text to screen\n");
-    vga_puts("  mem      - Memory map (stub)\n");
     
     vga_puts_color("\n  Milestones (to implement):\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  ps       - [L09] List processes\n");
     vga_puts("  kill     - [L09] Terminate a process\n");
     vga_puts("  threads  - [L10] List kernel threads\n");
+    vga_puts("  free     - [L11] Show free memory\n");
 
     vga_puts_color("\n  Stage 2 Demonstrations (Lecture 10):\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  race1    - Show Race Condition (without mutex)\n");
     vga_puts("  race2    - Show Safe Execution (with mutex)\n");
-    vga_puts("  prodcons - Run Producer-Consumer Demo\n\n");
+    vga_puts("  prodcons - Run Producer-Consumer Demo\n");
+    
+    vga_puts_color("\n  Stage 3 Demonstrations (Lecture 11):\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  meminfo  - Display Physical Memory totals\n");
+    vga_puts("  testpmm  - Test 100-frame allocation/freeing\n\n");
 }
 
 static void cmd_clear(void) { vga_clear(VGA_BLACK); }
@@ -387,9 +436,14 @@ static void shell_run(void) {
         if (k_strcmp(cmd, "mem")   == 0) { cmd_mem();   continue; }
         if (k_strcmp(cmd, "ps")    == 0) { cmd_ps();    continue; }
         if (k_strcmp(cmd, "threads") == 0) { cmd_threads(); continue; }
+        if (k_strcmp(cmd, "free") == 0) { cmd_free(); continue; }
         if (k_strcmp(cmd, "race1") == 0) { cmd_race1(); continue; }
         if (k_strcmp(cmd, "race2") == 0) { cmd_race2(); continue; }
         if (k_strcmp(cmd, "prodcons") == 0) { cmd_prodcons(); continue; }
+        
+        // Stage 3 Shell Commands integrated here
+        if (k_strcmp(cmd, "meminfo") == 0) { cmd_meminfo(); continue; }
+        if (k_strcmp(cmd, "testpmm") == 0) { cmd_test_pmm(); continue; }
 
         if (k_strncmp(cmd, "echo ", 5) == 0) {
             cmd_echo(k_ltrim(cmd + 5));
@@ -414,6 +468,9 @@ void kernel_main(void) {
 
     vga_init();
     kb_init();
+    
+    // Stage 3: Initialize the Physical Memory Manager early!
+    pmm_init();
 
     process_init();
 
