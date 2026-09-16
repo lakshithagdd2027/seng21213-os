@@ -15,6 +15,10 @@
 #include "../include/mutex.h"
 #include "../include/semaphore.h"
 
+#ifndef PROCESS_DEAD
+#define PROCESS_DEAD 3
+#endif
+
 extern pcb_t process_table[MAX_PROCESSES];
 extern int process_count;
 
@@ -24,6 +28,8 @@ static void cmd_about(void);
 static void cmd_echo(const char *args);
 static void cmd_mem(void);
 static void cmd_ps(void);
+static void cmd_kill(const char *args);
+static void cmd_threads(void);
 
 /* --- String and Int Helpers --- */
 static int k_strcmp(const char *a, const char *b) {
@@ -65,6 +71,16 @@ static void print_int(int num) {
     }
 }
 
+
+static int k_atoi(const char *str) {
+    int res = 0;
+    while (*str >= '0' && *str <= '9') {
+        res = res * 10 + (*str - '0');
+        str++;
+    }
+    return res;
+}
+
 /* ==========================================================
  * Background Tasks (Stage 1)
  * ========================================================== */
@@ -99,9 +115,9 @@ mutex_t mymutex;
 static void thread_bad(void *arg) {
     (void)arg;
     for (int i = 0; i < 1000000; i++) {
-        // Read, Delay, Write ක්‍රමය හරහා Race Condition එකක් බලහත්කාරයෙන් ඇති කිරීම
+         
         int temp = myglobal;
-        for(volatile int d = 0; d < 10; d++); // කුඩා ප්‍රමාදයක් (Context switch වීමට ඉඩ සැලසීම)
+        for(volatile int d = 0; d < 10; d++); 
         myglobal = temp + 1;
     }
     finished_threads++;
@@ -262,7 +278,12 @@ static void cmd_help(void) {
     vga_puts("  about    - About this OS and course\n");
     vga_puts("  echo     - Echo text to screen\n");
     vga_puts("  mem      - Memory map (stub)\n");
-    vga_puts("  ps       - List processes and threads\n");
+    
+    vga_puts_color("\n  Milestones (to implement):\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ps       - [L09] List processes\n");
+    vga_puts("  kill     - [L09] Terminate a process\n");
+    vga_puts("  threads  - [L10] List kernel threads\n");
+
     vga_puts_color("\n  Stage 2 Demonstrations (Lecture 10):\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  race1    - Show Race Condition (without mutex)\n");
     vga_puts("  race2    - Show Safe Execution (with mutex)\n");
@@ -300,9 +321,49 @@ static void cmd_ps(void) {
             vga_puts("RUNNING\n");
         } else if (process_table[i].state == PROCESS_READY) {
             vga_puts("READY\n");
+        } else if (process_table[i].state == PROCESS_DEAD) {
+            vga_puts("DEAD\n");
         } else {
-            vga_puts("BLOCKED/DEAD\n");
+            vga_puts("BLOCKED\n");
         }
+    }
+    vga_puts("\n");
+}
+
+static void cmd_kill(const char *args) {
+    int pid = k_atoi(args); 
+
+    if (pid <= 0 || pid >= process_count) {
+        vga_puts_color("  [Error] Invalid PID. Cannot kill.\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    if (pid == 1 || pid == 2) {
+        vga_puts_color("  [Warning] Killing background task...\n", VGA_YELLOW, VGA_BLACK);
+    }
+
+
+    process_table[pid].state = PROCESS_DEAD; 
+    
+    vga_puts_color("  Process terminated successfully.\n", VGA_LIGHT_GREEN, VGA_BLACK);
+}
+
+static void cmd_threads(void) {
+    vga_puts_color("\n  TID    STATE          TYPE\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ----------------------------------\n");
+    for (int i = 0; i < process_count; i++) {
+        vga_puts("   ");
+        print_int(process_table[i].pid);
+        vga_puts("      ");
+        
+        if (process_table[i].state == PROCESS_RUNNING) vga_puts("RUNNING       ");
+        else if (process_table[i].state == PROCESS_READY) vga_puts("READY         ");
+        else if (process_table[i].state == PROCESS_DEAD) vga_puts("DEAD          ");
+        else vga_puts("BLOCKED       ");
+
+        
+        if (i == 0) vga_puts("Shell Process\n");
+        else if (i == 1 || i == 2) vga_puts("BG Process\n");
+        else vga_puts("Kernel Thread\n");
     }
     vga_puts("\n");
 }
@@ -325,12 +386,18 @@ static void shell_run(void) {
         if (k_strcmp(cmd, "about") == 0) { cmd_about(); continue; }
         if (k_strcmp(cmd, "mem")   == 0) { cmd_mem();   continue; }
         if (k_strcmp(cmd, "ps")    == 0) { cmd_ps();    continue; }
+        if (k_strcmp(cmd, "threads") == 0) { cmd_threads(); continue; }
         if (k_strcmp(cmd, "race1") == 0) { cmd_race1(); continue; }
         if (k_strcmp(cmd, "race2") == 0) { cmd_race2(); continue; }
         if (k_strcmp(cmd, "prodcons") == 0) { cmd_prodcons(); continue; }
 
         if (k_strncmp(cmd, "echo ", 5) == 0) {
             cmd_echo(k_ltrim(cmd + 5));
+            continue;
+        }
+        
+        if (k_strncmp(cmd, "kill ", 5) == 0) {
+            cmd_kill(k_ltrim(cmd + 5));
             continue;
         }
 
